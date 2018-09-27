@@ -1,0 +1,138 @@
+#!/bin/bash
+set -eu
+set -o pipefail
+
+# Define some defaults if no environment variables set
+# Aiming to use the glances.env file
+INFLUX_HOST="${INFLUX_HOST:-10.10.20.10}"
+INFLUX_PORT="${INFLUX_PORT:-8086}"
+INFLUX_USER="${INFLUX_USER:-influx}"
+INFLUX_PASS="${INFLUX_PASS:-password}"
+INFLUX_DBID="${INFLUX_DBID:-glances}"
+INFLUX_PREF="${INFLUX_PREF:-'localhost'}"
+INFLUX_TAGS="${INFLUX_TAGS:-'server:docker_def,owner:docker'}"
+INFLUX_TIME="${INFLUX_TIME:-30}"
+
+# Change the tags from Grafana format into InfluxDB format
+INFLUX_TAGS=${INFLUX_TAGS//:/=}
+
+# NTP constants
+NTP_FIELDS=( remote refid st t when poll reach delay offset jitter )
+NTP_PATTERN="^[*]"
+NTP_CMD=`which ntpq`
+
+function get_temp
+{
+    local CPU_MILLIS=$(cat /sys/class/thermal/thermal_zone0/temp)
+    local CPU_DEGS=$(($CPU_MILLIS/1000))
+    local CPU_TENS=$(($CPU_MILLIS/100))
+    local CPU_DECIMAL=$(($CPU_TENS % $CPU_MILLIS))
+
+    echo "${CPU_DEGS}.${CPU_DECIMAL}"
+}
+
+function post_to_influx
+{
+    # TODO: check that we have a parameter & it is non-empty
+    curl -XPOST "http://$INFLUX_HOST:$INFLUX_PORT/write?db=$INFLUX_DBID" --data-binary "${1%[[:space:]]}"
+}
+
+function count_containers
+{
+    # Test if we are in a docker container
+    if grep docker /proc/self/cgroup -qa; then
+        #  YES - run this command to get container count
+        echo $(curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json | grep ]} | jq '.[] | .Id' | wc -l)
+    else
+        #  NO - use docker ps to count containters
+        echo $(docker ps -q | wc -l)
+    fi
+}
+
+function get_ntp_values
+{
+    local INFLUX_STR="ntp,$INFLUX_TAGS "
+    local CMD_STRING="${1:-offset,jitter}"
+    local CUT_STRING=$CMD_STRING
+
+    for (( i = 0 ; i < ${#NTP_FIELDS[@]} ; i++ ))
+    do
+        CUT_STRING=$( echo $CUT_STRING | sed  -E "s/\<${NTP_FIELDS[$i]}\>/$(($i+1))/" )
+    done
+
+    #TODO replace this IP address with a parameter
+    NTP_STRING=$( $NTP_CMD -p | grep -E "$NTP_PATTERN" | sed -r 's/[[:blank:]]+/,/g' )
+
+    # Create an array of strings called RESULTS containing the required NTP fields
+    RESULTS=( $(echo ${NTP_STRING} | cut  -d, -f${CUT_STRING}) )
+
+    IFS=',' read -ra ARRAY <<< "$RESULTS"
+
+    # Iterate over the strings array, appending the values to INFLUX_STR
+    for (( i=0 ; i < ${#ARRAY[@]} ; i++ ))
+    do
+        # Get the field name from the user-supplied string
+        TEMP_STR="$(echo $CMD_STRING | cut -d, -f$(($i+1)) )"
+
+        # Insert the field name and equate it to the NTP value string in InfluxDB format
+        INFLUX_STR="$INFLUX_STR$TEMP_STR=${ARRAY[$i]},"
+    done
+
+    # Chomp the trailing , because I can't be bothered to sort the for loop
+    echo "${INFLUX_STR%,}"
+}
+
+function get_firewall_rules
+{
+    CHAIN=${1:-fail2ban-ssh}
+    iptables -v -L $CHAIN -n --line-numbers | sed '/^num\|^$\|^Chain\|.*RETURN.*/d' | wc -l
+}
+
+function main
+{
+    # Let's process the command line flags
+    while getopts ":df:n:t" opt; do
+        case $opt in
+            d) # No argument
+                # Docker information
+                INFLUX_STR="docker,$INFLUX_TAGS container_count=$(count_containers)"
+                post_to_influx "${INFLUX_STR}"
+                ;;
+            f) #TODO
+                # Firewall rules
+                FIREWALL_ARG="${OPTARG}"
+                INFLUX_STR="firewall,$INFLUX_TAGS rule_count=$(get_firewall_rules $FIREWALL_ARG )"
+                post_to_influx "${INFLUX_STR}"
+                ;;
+            n)
+                # NTP fields
+                NTP_ARG="${OPTARG}"
+                post_to_influx "$( get_ntp_values $NTP_ARG )"
+                ;;
+            t) # No argument
+                # Temperature measurement requested
+                INFLUX_STR="temp,$INFLUX_TAGS temp=$(get_temp)"
+                post_to_influx "${INFLUX_STR}"
+                ;;
+            \?)
+                echo "$SCRIPT: invalid option supplied: -$OPTARG"
+                exit 1
+                ;;
+            :)
+                echo "$SCRIPT: -$OPTARG requires an argument"
+                exit 1
+                ;;
+        esac
+    done
+}
+
+#if declare -f -- "$1" &> /dev/null
+#then
+    # We've been called like this: path/script function <params>
+#    "$@"
+#else
+    # We've been called without a function name, so execute main
+    #TODO We could make the switches a variable at the top of the file
+    main -n offset,jitter -d -t -f fail2ban-ssh
+#fi
+
