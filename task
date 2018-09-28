@@ -1,6 +1,37 @@
 #!/bin/bash
+#
+# Title:  rapimid/task
+#
+# Description:
+#   Script to provide monitoring data to an InfluxDB intended to supplement the
+#   output provided by Glances. Whilst not specific to Rasberry Pi devices,
+#   they are the intended platform.
+#
+#   This file implements the "task" script required by the r.j2o.it/cron Docker
+#   image.
+#
+# Dependencies:
+#   Requires access to /var/run/docker.sock and Cap NET_ADMIN.
+#
+# Credits:
+#   None
+#
+# Usage:
+#   Use standalone, but intended to be executed by a concrete implementation of
+#   r.j2o.it/cron. See Dockerfile in this repository for help with that.
+#
+# Maintainer:
+#   James Osborne, dr.j.osborne@gmail.com
+#
+# License:
+#   MIT, see LICENSE file in repoistory root.
+#
+
 set -eu
 set -o pipefail
+
+# Define the command parameters to apply when this script executes
+MONITOR_PARAMS="${MONITORING_PARAMS:--n offset,jitter -d -t -f fail2ban-ssh}"
 
 # Define some defaults if no environment variables set
 # Aiming to use the glances.env file
@@ -21,6 +52,11 @@ NTP_FIELDS=( remote refid st t when poll reach delay offset jitter )
 NTP_PATTERN="^[*]"
 NTP_CMD=`which ntpq`
 
+# Get system CPU temperature from Raspberry Pi board
+# Arguments:
+#  None
+# Returns
+#  echo -- CPU temperature in deg C
 function get_temp
 {
     local CPU_MILLIS=$(cat /sys/class/thermal/thermal_zone0/temp)
@@ -31,12 +67,26 @@ function get_temp
     echo "${CPU_DEGS}.${CPU_DECIMAL}"
 }
 
+# Post the specified string to InfluxDB
+# Arguments:
+#  1 -- The binary data to post
+# Returns
+#  echo -- output from curl
+#  exit -- exit status of curl
 function post_to_influx
 {
     # TODO: check that we have a parameter & it is non-empty
     curl -XPOST "http://$INFLUX_HOST:$INFLUX_PORT/write?db=$INFLUX_DBID" --data-binary "${1%[[:space:]]}"
+
+    return $?
 }
 
+# Function returns the number of containers running on the system. Should work
+# both within and outside a container
+# Arguments:
+#  None
+# Returns:
+#  echo -- count of containers
 function count_containers
 {
     # Test if we are in a docker container
@@ -49,45 +99,68 @@ function count_containers
     fi
 }
 
+# Returns a string formatted for InfuxDB ingestion containing the user-
+# specified NTP monitoring parameters.
+# Arguments:
+#  1 -- CSV list of NTP fields to retrieve (see $NTP_FIELDS above)
+# Returns:
+#  echo -- InfluxDB-formatted string of parameters & values
 function get_ntp_values
 {
     local INFLUX_STR="ntp,$INFLUX_TAGS "
     local CMD_STRING="${1:-offset,jitter}"
     local CUT_STRING=$CMD_STRING
 
+    # Replace the human-readable NTP fields specified by the user in $CUT_STRING
+    # with their position numbers in the NTP output
     for (( i = 0 ; i < ${#NTP_FIELDS[@]} ; i++ ))
     do
         CUT_STRING=$( echo $CUT_STRING | sed  -E "s/\<${NTP_FIELDS[$i]}\>/$(($i+1))/" )
     done
 
-    #TODO replace this IP address with a parameter
-    NTP_STRING=$( $NTP_CMD -p | grep -E "$NTP_PATTERN" | sed -r 's/[[:blank:]]+/,/g' )
+    # Query NTP, filter for peer, convert to CSV
+    local NTP_STRING=$( $NTP_CMD -p | grep -E "$NTP_PATTERN" | sed -r 's/[[:blank:]]+/,/g' )
 
-    # Create an array of strings called RESULTS containing the required NTP fields
-    RESULTS=( $(echo ${NTP_STRING} | cut  -d, -f${CUT_STRING}) )
-
-    IFS=',' read -ra ARRAY <<< "$RESULTS"
+    # Create a CSV string containing only the required NTP values and convert
+    # into an array
+    IFS=',' read -ra ARRAY <<< "$(echo ${NTP_STRING} | cut  -d, -f${CUT_STRING})"
 
     # Iterate over the strings array, appending the values to INFLUX_STR
     for (( i=0 ; i < ${#ARRAY[@]} ; i++ ))
     do
-        # Get the field name from the user-supplied string
-        TEMP_STR="$(echo $CMD_STRING | cut -d, -f$(($i+1)) )"
-
-        # Insert the field name and equate it to the NTP value string in InfluxDB format
-        INFLUX_STR="$INFLUX_STR$TEMP_STR=${ARRAY[$i]},"
+        INFLUX_STR+="$(echo $CMD_STRING | cut -d, -f$(($i+1)) )=${ARRAY[$i]},"
     done
 
     # Chomp the trailing , because I can't be bothered to sort the for loop
     echo "${INFLUX_STR%,}"
 }
 
+# Executes iptables (hence requires CAP NET_ADMIN in Docker container) to count
+# the number of rules in the specified chain.
+# Arguments:
+#  1 -- The iptables chain to monitor
+# Returns:
+#  echo - the count of rules in the chain $1
+#  exit - the exit status of the command
 function get_firewall_rules
 {
-    CHAIN=${1:-fail2ban-ssh}
+    local CHAIN=${1:-fail2ban-ssh}
     iptables -v -L $CHAIN -n --line-numbers | sed '/^num\|^$\|^Chain\|.*RETURN.*/d' | wc -l
+
+    return $?
 }
 
+# Execute the monitoring functions requested in $MONITORING_PARAMS. Push the
+# results directly to the InfuxDB. This is easier than constructing a single
+# mult-line string
+# Arguments:
+#  -- String of options:
+#       -d          -- Monitor the number of Docker containers running
+#       -f [chain]  -- Monitor the rule count in the iptables chain
+#       -n [fields] -- Monitor the ntp fields (CSV list)
+#       -t          -- Monitor the system temperature
+# Returns
+#  exit -- status of last command (which we assume to be the one that failed)
 function main
 {
     # Let's process the command line flags
@@ -98,7 +171,7 @@ function main
                 INFLUX_STR="docker,$INFLUX_TAGS container_count=$(count_containers)"
                 post_to_influx "${INFLUX_STR}"
                 ;;
-            f) #TODO
+            f)
                 # Firewall rules
                 FIREWALL_ARG="${OPTARG}"
                 INFLUX_STR="firewall,$INFLUX_TAGS rule_count=$(get_firewall_rules $FIREWALL_ARG )"
@@ -124,15 +197,11 @@ function main
                 ;;
         esac
     done
+
+    return $?
 }
 
-#if declare -f -- "$1" &> /dev/null
-#then
-    # We've been called like this: path/script function <params>
-#    "$@"
-#else
-    # We've been called without a function name, so execute main
-    #TODO We could make the switches a variable at the top of the file
-    main -n offset,jitter -d -t -f fail2ban-ssh
-#fi
+# Execute the monitoring actions:
+main "$MONITOR_PARAMS"
 
+exit $?
