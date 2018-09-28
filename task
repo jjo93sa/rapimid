@@ -31,7 +31,7 @@ set -eu
 set -o pipefail
 
 # Define the command parameters to apply when this script executes
-MONITOR_PARAMS="${MONITORING_PARAMS:--n offset,jitter -d -t -f fail2ban-ssh}"
+MONITOR_PARAMS="${MONITOR_PARAMS:--n offset,jitter -d -t -f fail2ban-ssh}"
 
 # Define some defaults if no environment variables set
 # Aiming to use the glances.env file
