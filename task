@@ -201,7 +201,8 @@ function main
     return $?
 }
 
-# Execute the monitoring actions:
-main "$MONITOR_PARAMS"
+# Execute the monitoring actions, we want $MONITOR_PARAMS to expand, so no
+# quotes, otherwise main() sees it as a single string in $1
+main $MONITOR_PARAMS
 
 exit $?
