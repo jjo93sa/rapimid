@@ -63,7 +63,7 @@
 #           docker run -d --env-file rapimid.env \
 #                      --cap-add NET_ADMIN \
 #                      -v /var/run/docker.sock:/var/run/docker.sock:ro \
-#					   --net host --pid host \
+#                      --net host --pid host \
 #                      --rm --name rapimid <your-tag>/rapimid
 #
 # Maintainer:
@@ -83,12 +83,12 @@ LABEL status "development"
 
 # Install the tools we need from the standard repos
 RUN apk --no-cache add curl \
-						iptables \
-						jq
+                       iptables \
+                       jq
 
 # ntpsec is only available in testing:
 RUN apk --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
-	--no-cache add ntpsec
+        --no-cache add ntpsec
 
 # task script is copied by parent image ONBUILD
 
