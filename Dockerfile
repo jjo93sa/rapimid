@@ -78,7 +78,7 @@ ARG SRCT=latest
 FROM $ARCH/cron:$SRCT
 
 LABEL maintainer "dr.j.osborne@gmail.com"
-LABEL version "0.2"
+LABEL version "0.3"
 LABEL status "development"
 
 # Install the tools we need from the standard repos
@@ -86,9 +86,11 @@ RUN apk --no-cache add curl \
                        iptables \
                        jq
 
+# ntpsec is in Edge. Usual --repository flag was causing issues, so this:
+RUN sed -i -e 's/v[[:digit:]]\.[[:digit:]]/edge/g' /etc/apk/repositories
+
 # ntpsec is only available in testing:
-RUN apk --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
-        --no-cache add ntpsec
+RUN apk --no-cache add ntpsec
 
 # task script is copied by parent image ONBUILD
 
