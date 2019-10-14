@@ -21,15 +21,12 @@
 #   building from the Dockerfile, you may still over-ride this setting during
 #   build by specifying the --build-arg as above.
 #
-#   This image uses a default base of r.j2o.it/cron, which is built for X86-64
-#   processors. The default architecture can be changed at build-time with the
-#   following --build-arg, e.g. for Raspberry Pi images:
-#
-#        --build-arg ARCH="r.j2o.it/arm32v6/cron"
+#   This image uses a default base of r.j2o.it/cron, which is built for amd64
+#   arm64, and arm/v7 processors.
 #
 # Dependencies:
-#   (1) There must be an image of r.j2o.it/cron (or r.j2o.it/arm32v6/cron)
-#       available for the build to complete.
+#   (1) To build: there must be an image of r.j2o.it/cron containing a
+#       manifest for your chosen processor architecture.
 #   (2) The running container needs read access to /var/run/docker.sock
 #   (3) The running container needs access to the host network and PID space
 #   (4) The running container requires cap NET_ADMIN for iptables monitoring
@@ -40,11 +37,12 @@
 #
 # Usage:
 #   Usage of this file is very simple, just download the image from
-#   r.j2o.it/rapimid, or other cpu architecture variant, and jump to step (3)
-#   below.
+#   r.j2o.it/rapimid, and jump to step (3) below. The following processor
+#   architectures are supported amd64, arm64, arm/v7.
 #
 #   If you prefer to build your own, for example to set the CRON_SPEC
-#   differently, the steps are:
+#   differently, the steps are as follows. Using the experimental buildx
+#   feature in Docker will allow you to build a multiarch image:
 #
 #   (1) Create an image of cron/Dockerfile from repository
 #       https://github.com/jjo93sa/dockerfiles.git, or download the pre-built
@@ -73,9 +71,9 @@
 #   MIT, see LICENSE file in repoistory root.
 #
 ARG CRON_SPEC="* * * * *"
-ARG ARCH=r.j2o.it
-ARG SRCT=latest
-FROM $ARCH/cron:$SRCT
+ARG REG=r.j2o.it
+ARG TAG=latest
+FROM $REG/cron:$TAG
 
 LABEL maintainer "dr.j.osborne@gmail.com"
 LABEL version "0.3"
@@ -84,10 +82,11 @@ LABEL status "development"
 # Install the tools we need from the standard repos
 RUN apk --no-cache add curl \
                        iptables \
-                       jq
+                       jq \
+                       ntpsec
 
 # ntpsec is in Edge. Usual --repository flag was causing issues, so this:
-RUN sed -i -e 's/v[[:digit:]]\.[[:digit:]]/edge/g' /etc/apk/repositories
+#RUN sed -i -e 's/v[[:digit:]]\.[[:digit:]]/edge/g' /etc/apk/repositories
 
 # ntpsec is only available in testing:
 RUN apk --no-cache add ntpsec
